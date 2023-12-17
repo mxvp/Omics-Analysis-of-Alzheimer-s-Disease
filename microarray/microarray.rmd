@@ -1,0 +1,306 @@
+---
+title: "Comparative analysis microarray data of neurons with and without neurofibriallary tangles from Alzheimer's patients."
+author: "Max Van Puyvelde"
+date: '2023-12'
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+# Comparative analysis microarray data of neurons with and without neurofibriallary tangles from Alzheimer's patients.
+
+Link to dataset: https://www.ebi.ac.uk/biostudies/arrayexpress/studies/E-GEOD-4757
+
+## Packages
+
+In this section, the necessary R packages are installed and loaded for data analysis. Various libraries such as affy, limma, and siggenes are installed and loaded into the R environment.
+
+```{r, echo = FALSE, warning = FALSE}
+## Install BiocManager
+suppressMessages({
+    ## Install BiocManager
+    if (!require("BiocManager", quietly = TRUE))
+        install.packages("BiocManager", quiet = TRUE)
+    BiocManager::install(version = "3.16", quiet = TRUE)
+
+    ## Install packages
+    BiocManager::install(c("affy", "arrayQualityMetrics", "ArrayExpress", "limma", "siggenes"), update = FALSE, quiet = TRUE)
+})
+```
+
+```{r,echo=FALSE}
+suppressMessages({
+    ## Load packages
+    library(affy)
+    library(arrayQualityMetrics)
+    library(ArrayExpress)
+    library(limma)
+    library(siggenes)
+    library(moments)
+    library(png)
+    library(jpeg)
+    library(GOstats)
+})
+```
+
+## Loading the data
+
+This part involves loading microarray data related to neurons from Alzheimer's patients and organizing it into an object named Exp.
+
+```{r,warning=FALSE}
+Exp <- ReadAffy(celfile.path = "E-GEOD-4757/celfiles",phenoData = 'E-GEOD-4757/E-GEOD-4757.sdrf.txt')
+```
+
+```{r}
+# Basic view
+head(exprs(Exp))
+pData(Exp)
+```
+
+## Quality Control
+
+The quality of the data, both in its raw and log-transformed forms, is assessed using the arrayQualityMetrics function to ensure data integrity and quality before further analysis.
+
+```{r,echo = FALSE, warning=FALSE}
+# on raw data
+arrayQualityMetrics(
+  Exp, 
+  intgroup = colnames(pData(Exp))[2],
+  outdir = "QC_rawdata", 
+  force = TRUE
+)
+```
+
+
+
+```{r,echo = FALSE, warning=FALSE}
+# on log transformed data
+arrayQualityMetrics(
+  Exp,
+  intgroup = colnames(pData(Exp))[2],
+  outdir = "QC_rawdata_logtransform",
+  force = TRUE,
+  do.logtransform = TRUE
+)
+```
+
+
+## Preprocessing
+
+The raw microarray data is preprocessed using RMA (Robust Microarray Analysis) to normalize and summarize probe-level data into gene-level data for downstream analysis.
+
+
+```{r}
+# Before normalization
+boxplot(Exp)
+
+png("boxplot_pre_norm.png", width = 800, height = 600)
+boxplot(Exp)
+dev.off()
+```
+
+The data shows different variances and means, it needs to be normalized.
+
+```{r}
+#RMA (Robust Microarray Analysis):multi-chip analysis method that when selected, adjusts the probe intensity data in the following three steps:
+# 1)  Signal values for each chip are adjusted using RMA background correction.
+# 2)  Data across all of the chips is normalized using normalization method:
+# Quantile: Adjusts the probe intensity values so that the distribution is the same across all arrays.
+# 3)  Probe data are summarized into gene level signal values using RMA’s median polish summarization.
+ExpRMA <- affy::rma(Exp)
+```
+
+
+```{r}
+# After normalization
+boxplot(ExpRMA)
+
+png("boxplot_post_norm.png", width = 800, height = 600)
+boxplot(Exp)
+dev.off()
+```
+
+As expected, the data now shows equal variances and means.
+
+## Quality control on preprocessed data
+
+A quality assessment is performed on the preprocessed (RMA) data using the arrayQualityMetrics function to validate the reliability of the processed data.
+
+```{r,echo = FALSE, warning=FALSE}
+arrayQualityMetrics(ExpRMA, outdir = "rma", force = TRUE) # RMA produces log-transformed data
+```
+
+
+```{r}
+head(exprs(ExpRMA))
+```
+
+```{r}
+# Add categorical variable
+annot <- factor(pData(ExpRMA)[, "Factor.Value..clinical.information."])
+pData(ExpRMA)[, "Factor.Value..clinical.information."]
+```
+
+
+## Differential expression
+
+The data is prepared and fitted into a linear model to compare gene expression differences between neurons with and without neurofibrillary tangles in Alzheimer's patients.
+
+```{r}
+design <- model.matrix(~0 + annot)
+colnames(design) <- c("NORMAL", "TANGLES")
+fit <- lmFit(ExpRMA, design)
+cont.matrix <- makeContrasts(NvsS = NORMAL - TANGLES, levels = design)
+fit2 <- contrasts.fit(fit, cont.matrix)
+fit2 <- eBayes(fit2)
+```
+
+## Visualisations
+
+Different visual representations such as histograms, volcano plots, MA plots, etc., are generated to depict the distribution of p-values, expression values, and differentially expressed genes.
+
+```{r}
+# Histogram of p-values
+hist_data_pvalues <- hist(fit2$p.value, breaks = 20, col = "skyblue", main = "Distribution of p-values", xlab = "p-values")
+png("pvalues_histogram.png", width = 800, height = 600, res = 120)
+plot(hist_data_pvalues, col = "skyblue", main = "Distribution of p-values", xlab = "p-values")
+dev.off()
+
+```
+
+```{r}
+# Histogram of expression values
+hist_data <- hist(unlist(exprs(ExpRMA)), col = "skyblue", xlab = "Expression Values", ylab = "Frequency", main = "Distribution of Expression Values")
+png("expression_values_histogram.png", width = 800, height = 600, res = 120)
+plot(hist_data, col = "skyblue", xlab = "Expression Values", ylab = "Frequency", main = "Distribution of Expression Values")
+dev.off()
+```
+
+
+```{r}
+# Volcano plot
+jpeg("Volcanoplot.jpg")
+volcanoplot(fit2, col = ifelse(fit2$p.value < 0.05, "red", "blue"))
+dev.off()
+img <- readJPEG("Volcanoplot.jpg")
+grid::grid.raster(img)
+```
+
+
+```{r}
+# MA plot
+jpeg("MAplot.jpg")
+limma::plotMA(fit2)
+dev.off()
+img <- readJPEG("MAplot.jpg")
+grid::grid.raster(img)
+```
+
+## Correction for multiple testing
+
+```{r}
+# Storing differentially expressed features
+# Adjust for multiple testing method: Benjamini-Hochberg (BH) 
+LIMMAout <- topTable(fit2, adjust = "BH", number = nrow(exprs(ExpRMA)))
+head(LIMMAout)
+```
+
+While the raw p-values indicate statistical significance for a large number of features, the adjusted p values show no statistical significance.
+
+```{r}
+# Check intensity values for top results of limma output
+exprs(ExpRMA)[rownames(exprs(ExpRMA)) %in% rownames(head(LIMMAout, 1)),]
+rowMeans(exprs(ExpRMA)[rownames(exprs(ExpRMA)) %in% rownames(head(LIMMAout)), c(1, 6, 7)])
+
+rowMeans(exprs(ExpRMA)[rownames(exprs(ExpRMA)) %in% rownames(head(LIMMAout)), 2:5])
+```
+These expression values circle around the median, as was seen in the plotted distribution.
+
+## Annotation
+
+Array annotation information is loaded and checked for consistency with the processed data, ensuring all necessary probes are present for downstream analysis.
+
+```{r}
+# Load array annotation file
+annotation_MA <- read.table("./E-GEOD-4757/A-AFFY-44.adf.txt", header = TRUE, sep = "\t", skip = 20, fill = TRUE)
+print(head(annotation_MA))
+```
+
+```{r}
+# Check if all probes are present in both sets
+dim(annotation_MA)
+dim(LIMMAout)
+sum(annotation_MA$Composite.Element.Name == sort(rownames(LIMMAout)))
+```
+
+Both have 54675 probes
+All probes are present
+
+```{r}
+# Sort LIMMA output alphabetically on probe name
+LIMMAout_sorted <- LIMMAout[sort(rownames(LIMMAout), index.return = TRUE)$ix,]
+```
+
+```{r}
+# Add gene names to LIMMA output
+LIMMAout_sorted$gene <- annotation_MA$Composite.Element.Database.Entry.ensembl.
+LIMMAout_annot <- LIMMAout_sorted[sort(LIMMAout_sorted$adj.P.Val, index.return = TRUE)$ix,]
+```
+
+
+```{r}
+tail(LIMMAout_annot)
+empty_genes <- sum(LIMMAout_annot$gene == "")
+non_empty_genes <- sum(LIMMAout_annot$gene != "")
+cat("Number of empty genes:", empty_genes, "\n")
+cat("Number of non-empty genes:", non_empty_genes, "\n")
+```
+
+As we can see, a lot of genes are missing in this array annotation but the majority is present.
+
+
+## Additional visualisation
+
+This section focuses on creating a histogram to visualize the distribution of log-fold change (logFC) values obtained from the differential expression analysis.
+
+```{r}
+# Histogram of logFC values
+# Create a histogram of logFC values
+hist_logFC <- hist(LIMMAout_annot$logFC, breaks = 100, main = "Distribution of logFC values")
+png("logFC_histogram.png", width = 800, height = 600, res = 120)
+plot(hist_logFC, main = "Distribution of logFC values")
+dev.off()
+```
+
+
+## Enrichment analysis
+
+Enrichment analysis using Gene Ontology (GO) is performed to identify any functional enrichments among differentially expressed genes, highlighting terms with significant gene involvement.
+
+```{r}
+# Because we have no significantly expressed genes based on the adjusted p values, we will consider the genes that are differentially expressed based on raw pvalues.
+
+raw_p_values <- LIMMAout_annot$P.value
+significant_genes <- LIMMAout_annot$gene[raw_p_values < 0.05]
+enriched_GO <- goana(as.numeric(LIMMAout_annot$logFC)[LIMMAout_annot$gene %in% significant_genes], ontology = "BP", number = 30)
+```
+```{r}
+# The terms with most "differntially expressed genes"
+top_30_N <- enriched_GO[order(enriched_GO$N, decreasing = TRUE), ]
+top_30_N <- head(top_30_N, 30)
+top_30_N
+```
+
+```{r}
+# Some more niche "differentially expressed" genes
+bottom_30_N <- enriched_GO[order(enriched_GO$N, decreasing = FALSE), ]
+bottom_30_N <- head(bottom_30_N, 30)
+bottom_30_N
+```
+
+The terms with the highest number of genes are obviously very general genes while the lowest 30 are more niche.
+
+DISCLAIMER: Because we found no statistically significant genes after adjusting the pvalues for multiple testing, these results are not meaningful.

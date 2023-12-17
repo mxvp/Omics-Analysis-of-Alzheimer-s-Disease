@@ -1,0 +1,561 @@
+---
+title: "Comparative analysis methylation data of induced neurons from Alzheimer's patients and controls."
+author: "Max Van Puyvelde"
+date: '2023-12'
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Comparative analysis infinium data of induced neurons from Alzheimer's patients and controls.
+
+This analysis focuses on comparing the methylation patterns within induced neurons sourced from Alzheimer's patients and healthy controls, utilizing high-throughput Infinium EPIC array data.
+
+Link to the dataset: https://www.ebi.ac.uk/biostudies/arrayexpress/studies/E-MTAB-10344
+
+## Packages
+
+Installing and loading necessary R packages required for data analysis, including lumi, wateRmelon, minfi, limma, siggenes, and others.
+
+```{r,echo=FALSE,warning=FALSE}
+# Installing necessary packages
+suppressMessages({
+    BiocManager::install('lumi')
+    BiocManager::install('wateRmelon')
+    BiocManager::install('minfi')
+    BiocManager::install('IlluminaHumanMethylationEPICanno.ilm10b4.hg19')
+    BiocManager::install('IlluminaHumanMethylationEPICmanifest')
+    BiocManager::install('ChAMPdata')
+    BiocManager::install("clusterProfiler")
+    BiocManager::install("org.Hs.eg.db")
+})
+```
+
+
+```{r,echo = FALSE,warning=FALSE}
+suppressMessages({
+    # Loading packages
+    library("ggplot2")
+    library("huex10sttranscriptcluster.db")
+    library("limma")
+    library("siggenes")
+    library("affy")
+    library("RSQLite")
+    library("DBI")
+    library("htmltools")
+    library("biomaRt")
+    library("tximport")
+    library("wateRmelon")
+    library("dplyr")
+    library('lumi')
+    library('ChAMPdata')
+    library('clusterProfiler')
+    library(flextable)
+})
+```
+
+## Loading the data
+
+Importing and examining the Infinium EPIC array data along with the annotation file.
+
+Array type: Infinium EPIC bead array 850k+ probes.
+
+```{r}
+infdata <- readEPIC("/Users/mxvp/Documents/Masters_Bioinformatics/Y2/AHTA/project_2023/Data/Infinium")
+annot <- read.delim("/Users/mxvp/Documents/Masters_Bioinformatics/Y2/AHTA/project_2023/Data/infinium_annot/E-MTAB-10344.sdrf.txt")
+```
+
+```{r}
+# Head and dimensions of the beta values.
+dim(betas(infdata))
+head(betas(infdata))
+
+# Head and dimensions of the M values.
+dim(exprs(infdata))
+head(exprs(infdata))
+```
+
+```{r}
+print(annot)
+print(sum(is.na(exprs(infdata))))
+```
+
+
+
+## Annotation
+
+Selecting and filtering specific characteristics such as neuron cell type for the subsequent analysis.
+
+Analysis will be done with 16 samples of induced neurons. 8 AD vs 8 control.
+There are no confounders.
+
+
+```{r}
+annot<- subset(annot,Characteristics.cell.type.=="neuron")
+annot<- distinct( annot, Source.Name, .keep_all=TRUE)
+
+print(annot[,c("Source.Name","Characteristics.disease.","Characteristics.organism.part.","Characteristics.cell.type.")])
+
+
+
+```
+
+
+## preprocessing
+
+Cleaning and preparing the data by handling missing values, adjusting sample names, and filtering probes with insufficient calling p-values.
+
+```{r}
+# removing NA values
+print(sum(is.na(exprs(infdata))))
+
+# 5475 NA values to be removed
+infdata_NA_removed <- infdata[rowSums(is.na(exprs(infdata)))==0,]
+
+#sanity check
+print(sum(is.na(exprs(infdata_NA_removed))))
+
+# Change sampleNames to something more comprehensible 
+modified_names <- ifelse(annot$Characteristics.disease. == "Alzheimer's disease", paste(annot[, 1], "AD", sep = "_"), paste(annot[, 1], annot[, 5], sep = "_"))
+
+sampleNames(infdata) <- modified_names
+```
+
+```{r}
+# Remove probes for which calling p-value is insufficient
+infdata.pf<-pfilter(infdata_NA_removed)
+```
+
+## Comparison of average methylation between control and tumor samples
+
+Visualizing methylation levels using boxplots and comparing mean methylation levels between Alzheimer's disease (AD) and control samples.
+
+```{r}
+# Visualisation of Low dimensional data
+boxplot(betas(infdata),las=2)
+
+jpeg("OverallMethylation.jpg")
+boxplot(betas(infdata),las=2)
+dev.off()
+```
+
+
+```{r}
+#High dimensional data
+meth_mean_AD<- rep(0,8)
+meth_mean_CONTROL<- rep(0,8)
+for (i in 1:ncol(infdata.pf)){
+  if (i < 9){
+    meth_mean_AD[i] <- mean(betas(infdata.pf)[,i])
+  } else {
+    meth_mean_CONTROL[i-8] <- mean(betas(infdata.pf)[,i])
+  }
+}
+```
+
+```{r}
+# Create the boxplot
+boxplot(list(AD = meth_mean_AD, CONTROL = meth_mean_CONTROL), 
+        col = c("red", "blue"), 
+        names = c("AD", "CONTROL"),
+        main = "Methylation Comparison between AD and CONTROL Samples",
+        ylab = "Methylation Levels")
+
+# Save the boxplot as a PNG file
+png("boxplot_meth_comparison.png", width = 800, height = 600)
+boxplot(list(AD = meth_mean_AD, CONTROL = meth_mean_CONTROL), 
+        col = c("red", "blue"), 
+        names = c("AD", "CONTROL"),
+        main = "Methylation Comparison between AD and CONTROL Samples",
+        ylab = "Methylation Levels")
+dev.off()
+```
+
+We can clearly observe that the alzheimer's samples show higher methylation levels than the control samples.
+
+```{r}
+# t-tests
+t_test_res <- t.test(meth_mean_AD,meth_mean_CONTROL)
+t_test_res
+```
+
+The t-test shows a statistically relevant p-value, indicating confirmed higher methylation levels in alzheimer's samples.
+
+```{r}
+# Combine data into a dataframe
+dat_boxplot <- data.frame(
+  betas = c(meth_mean_AD, meth_mean_CONTROL),
+  group = c(rep("AD", length(meth_mean_AD)), rep("CONTROL", length(meth_mean_CONTROL)))
+)
+```
+
+```{r}
+boxplot(betas ~ group, dat_boxplot, las = 2)
+jpeg("OverallMethylation_averages.jpg")
+
+par(mfrow=c(1, 2))
+boxplot(betas ~ group, dat_boxplot, las = 2)
+dev.off()
+```
+## Normalization & QC
+
+Normalizing the data and performing quality control (QC) steps including color bias adjustment and visualizing density plots for M-values.
+
+```{r}
+## Perform normalization including dye color adjustment
+infdata.dasen.pf <- dasen(infdata.pf)
+```
+
+```{r}
+## Make methylumi objects to check density and color bias adjustment
+infdataM <- as(infdata.pf, 'MethyLumiM')
+infdataN <- as(infdata.dasen.pf, 'MethyLumiM')
+```
+
+```{r}
+# Plot color intensity values before normalization
+plotColorBias1D(infdataM, channel = "both", main = "before")
+# Save the plot
+png("color_intensity_before_norm.png", width = 800, height = 600)
+plotColorBias1D(infdataM, channel = "both", main = "before")
+dev.off()
+
+# Plot color intensity values after normalization
+plotColorBias1D(infdataN, channel = "both", main = "after")
+# Save the plot
+png("color_intensity_after_norm.png", width = 800, height = 600)
+plotColorBias1D(infdataN, channel = "both", main = "after")
+dev.off()
+```
+```{r}
+# Plot M-values before normalization
+density(infdataM, xlab = "M-value", main = "before",ylab = "")
+# Save the plot
+png("M_values_before_norm.png", width = 800, height = 600)
+density(infdataM, xlab = "M-value", main = "before",ylab = "")
+dev.off()
+
+# Plot M-values after normalization
+density(infdataN, xlab = "M-value", main = "after",ylab = "")
+# Save the plot
+png("M_values_after_norm.png", width = 800, height = 600)
+density(infdataN, xlab = "M-value", main = "after",ylab = "")
+dev.off()
+```
+
+
+The QC for Infinium array data is showing the log2 intensity of both methylated and unmethylated pixels, before and after background subtraction. The image shows a clear separation between the methylated and unmethylated pixels, indicating that the data is of good quality.
+
+The LOD intensity of both methylated and unmethylated pixels is equal to 14. This means that any pixel with an intensity below 14 is considered to be background and is ignored.
+
+The density histogram of the M-values also shows a good separation between the methylated and unmethylated probes. The majority of the methylated probes have M-values above 0, while the majority of the unmethylated probes have M-values below 0.
+
+A couple of observations:
+
+1) The intensity of the methylated pixels is consistently higher than the intensity of the unmethylated pixels, both before and after background subtraction. This is expected, as methylated probes bind more avidly to the bisulfite-converted DNA.
+
+2) The density histogram of the M-values shows a slight shift to the left after background subtraction. This is likely due to the removal of some background signal from the methylated probes.
+
+3) There are a few probes that have M-values between 0 and 1. These probes may be partially methylated or may have some background signal.
+
+Overall, this QC indicates that the Infinium array data is of high quality and can be used for downstream analysis.
+
+
+## differential methylation analysis-limma
+
+Building a design matrix, conducting differential methylation analysis using limma, and generating visualizations like Volcano and MA plots.
+
+```{r}
+# build design and contrasts
+des<- factor(as.character(annot[,5]))
+design<- model.matrix(~0+des)
+colnames(design)<- c("AD","normal")
+cont.matrix<- makeContrasts(NvsS=AD-normal,levels=design)
+```
+
+```{r}
+# Perform limma
+fit<- lmFit(infdataN,design)
+fit2<- contrasts.fit(fit,cont.matrix)
+fit2<-eBayes(fit2)
+```
+
+## Visualisations
+
+Creating scatterplots, histograms, and volcano plots to visualize different aspects of the analysis such as methylation levels, fold change distribution, and significance.
+
+```{r}
+# volcano plot
+volcanoplot(fit2, col = ifelse(fit2$p.value < 0.05, "red", "blue"))
+
+jpeg("Volcanoplot.jpg")
+volcanoplot(fit2, col = ifelse(fit2$p.value < 0.05, "red", "blue"))
+dev.off()
+```
+
+```{r}
+# MA plot
+limma::plotMA(fit2)
+jpeg("MAplot.jpg")
+limma::plotMA(fit2)
+dev.off()
+```
+
+
+```{r}
+# DE results
+LIMMAout<- topTable(fit2,adjust="BH",number=nrow(exprs(infdataM)))
+head(LIMMAout)
+```
+
+
+```{r}
+# check M-values for top results
+exprs(infdataN) [rownames(infdataN)%in%rownames(head(LIMMAout)),]
+```
+
+
+```{r}
+## Check beta-values for top results
+betas_infdataN <- betas(infdataN)[rownames(infdataN) %in% rownames(head(LIMMAout)),]
+head(betas_infdataN)
+```
+
+## Annotation and Genic Regions Analysis
+
+Annotating the results with additional information, selecting CpGs in genic and promoter regions, and examining multiple CpGs undergoing similar methylation differences.
+
+```{r}
+# Functional annotation of limma results
+## Load annotation and sort alphabetically on probe name
+data("probe.features.epic")
+annotation_MA <- probe.features
+print(head(annotation_MA))
+annotation_MA <- annotation_MA[sort(rownames(annotation_MA), index.return = TRUE)$ix,]
+```
+
+
+```{r}
+## Check if all probes are present in both sets
+dim(LIMMAout)
+dim(annotation_MA)
+sum(LIMMAout$Probe_ID %in% rownames(annotation_MA))
+sum(rownames(annotation_MA) %in% LIMMAout$Probe_ID)
+```
+Only 844865 probes in our experiment and 866895 in the annotation.
+
+
+```{r}
+# Since more probes are present in the annotation file, remove unnecessary probes
+annotation_MA <- annotation_MA[rownames(annotation_MA) %in% LIMMAout$Probe_ID,]
+```
+
+```{r}
+# Sort LIMMA output alphabetically on probe name
+LIMMAout_sorted <- LIMMAout[sort(LIMMAout$Probe_ID, index.return = TRUE)$ix,]
+```
+
+```{r}
+# Add gene names to LIMMA output
+LIMMAout_sorted$Gene <- annotation_MA$gene
+LIMMAout_sorted$Feature <- annotation_MA$feature
+LIMMAout_sorted$Chrom <- annotation_MA$CHR
+LIMMAout_sorted$Pos <- annotation_MA$MAPINFO
+LIMMAout_sorted$Chrom <- as.character(LIMMAout_sorted$Chrom)
+LIMMAout_sorted$Gene <- as.character(LIMMAout_sorted$Gene)
+LIMMAout_sorted$Feature <- as.character(LIMMAout_sorted$Feature)
+```
+
+```{r}
+# Inspect the head of the annotated results
+head(LIMMAout_sorted)
+```
+
+
+```{r}
+# Quantification of absolute methylation differences
+## Check if dimension of objects to combine are the same
+dim(LIMMAout_sorted)
+dim(betas(infdata))
+```
+
+LIMMAout_sorted has 844,865 rows
+betas(infdata) has 865,918 rows
+
+
+```{r}
+# Add average betas and difference between AD and control to LIMMA output
+LIMMAout_sorted$AD_meth <- rowMeans(betas(infdata)[rownames(infdata) %in% LIMMAout_sorted$Probe_ID, annot$Factor.Value.disease. == "Alzheimer's disease"])
+LIMMAout_sorted$Control_meth <- rowMeans(betas(infdata)[rownames(infdata) %in% LIMMAout_sorted$Probe_ID, annot$Factor.Value.disease. == "normal"])
+LIMMAout_sorted$Abs_diff_meth <- abs(LIMMAout_sorted$AD_meth - LIMMAout_sorted$Control_meth)
+```
+
+
+```{r}
+# Resort results
+LIMMAout_annot <- LIMMAout_sorted[sort(LIMMAout_sorted$P.Value, index.return = TRUE)$ix,]
+```
+
+```{r}
+# Select CpGs in genic regions
+sum(LIMMAout_annot$adj.P.Val < 0.05)
+sum(LIMMAout_annot$adj.P.Val[LIMMAout_annot$Gene != ""] < 0.05)
+LIMMAout_annot_gene <- LIMMAout_annot[LIMMAout_annot$Gene != "", ]
+head(LIMMAout_annot_gene)
+```
+
+
+```{r}
+# Select CpGs in genic regions
+sum(LIMMAout_annot$adj.P.Val < 0.05)
+sum(LIMMAout_annot$adj.P.Val[LIMMAout_annot$Gene != ""] < 0.05)
+LIMMAout_annot_gene <- LIMMAout_annot[LIMMAout_annot$Gene != "", ]
+head(LIMMAout_annot_gene)
+```
+
+```{r}
+# Look for multiple CpG in genic regions undergoing similar methylation differences
+topgenes_genic <- unique(LIMMAout_annot_gene$Gene[1:10])
+for (i in 1:length(topgenes_genic)) {
+  LIMMAout_subset <- LIMMAout_annot_gene[(LIMMAout_annot_gene$Gene == topgenes_genic[i]) &
+    (LIMMAout_annot_gene$adj.P.Val < 0.05) &
+    (abs(LIMMAout_annot_gene$logFC) > 2), ]
+  print(LIMMAout_subset[sort(LIMMAout_subset$Pos, index.return = TRUE)$ix,])
+}
+```
+Only 1 CpG in genic regions undergoing similar methylation differences.
+
+```{r}
+# Select CpGs in promoter regions
+LIMMAout_annot_prom <- LIMMAout_annot_gene[grepl("TSS", LIMMAout_annot_gene$Feature) |
+  (LIMMAout_annot_gene$Feature == "1stExon"), ]
+head(LIMMAout_annot_prom)
+```
+
+```{r}
+# Look for multiple CpG in promoter regions undergoing similar methylation differences
+topgenes_prom <- unique(LIMMAout_annot_prom$Gene[1:10])
+for (i in 1:length(topgenes_prom)) {
+  LIMMAout_subset <- LIMMAout_annot_prom[(LIMMAout_annot_prom$Gene == topgenes_prom[i]) &
+    (LIMMAout_annot_prom$adj.P.Val < 0.10), ]
+  if (nrow(LIMMAout_subset) > 1) {
+    print(LIMMAout_subset[sort(LIMMAout_subset$Pos, index.return = TRUE)$ix, ])
+  }
+}
+```
+No CpG in promoter regions undergoing similar methylation differences.
+
+
+## Visualisations
+
+
+
+```{r}
+# Scatterplot
+scatter_plot <- ggplot(LIMMAout_sorted, aes(x = AD_meth, y = Control_meth)) +
+  geom_point() +
+  labs(title = "Methylation Levels AD vs Control", x = "AD Methylation", y = "Control Methylation")
+print(scatter_plot)
+ggsave("scatterplot_AD_vs_Control.png", plot = scatter_plot, width = 8, height = 6, dpi = 300)
+```
+
+
+
+```{r}
+# Histogram
+histogram <- ggplot(LIMMAout_sorted, aes(x = logFC)) +
+  geom_histogram(binwidth = 0.5, fill = "skyblue", color = "black") +
+  labs(title = "Fold Change Distribution", x = "logFC") +
+  theme_minimal()
+print(histogram)
+ggsave("fold_change_distribution.png", plot = histogram, width = 8, height = 6, dpi = 300)
+```
+
+```{r}
+# Scatterplot
+scatterplot <- ggplot(LIMMAout_sorted, aes(x = AveExpr, y = logFC)) +
+  geom_point(color = "blue", alpha = 0.6) +
+  labs(title = "Expression vs. Fold Change", x = "AveExpr", y = "logFC") +
+  theme_minimal()
+print(scatterplot)
+ggsave("expression_vs_fold_change.png", plot = scatterplot, width = 8, height = 6, dpi = 300)
+```
+
+
+```{r}
+# Volcano plot
+volcano_plot <- ggplot(LIMMAout_sorted, aes(x = logFC, y = -log10(P.Value))) +
+  geom_point(aes(color = ifelse(abs(logFC) > 1 & P.Value < 0.05, "red", "black")), alpha = 0.6) +
+  labs(title = "Volcano Plot", x = "logFC", y = "-log10(P.Value)", color = "Significance") +
+  scale_color_identity(guide = "legend", labels = c("Not Significant", "Significant"), breaks = c("black", "red")) +
+  theme_minimal()
+print(volcano_plot)
+ggsave("volcano_plot.png", plot = volcano_plot, width = 8, height = 6, dpi = 300)
+```
+
+```{r}
+# Create table of top 4 methylated genes
+selected_rows <- LIMMAout_annot_gene[1:4, c("logFC", "P.Value", "adj.P.Val", "Gene", "Chrom", "Pos", "Abs_diff_meth")]
+ft <- flextable(selected_rows)
+ft
+```
+
+## Gene Ontology Enrichment Analysis
+
+
+```{r}
+# The top 10 methylation of genes in genic regions
+# enrichGO
+enrichGO_results<- enrichGO(gene = head(LIMMAout_annot_gene$Gene, 10), 
+         OrgDb = org.Hs.eg.db, 
+         keyType = "SYMBOL", 
+         ont = "BP", 
+         pAdjustMethod = "BH", 
+         pvalueCutoff = 0.05, 
+         qvalueCutoff = 0.05)
+
+enrichGO_results_df <- as.data.frame(enrichGO_results) 
+print(enrichGO_results_df)
+```
+
+```{r}
+dotplot(enrichGO_results)
+png("dotplot_GO_results_gene.png")
+dotplot(enrichGO_results)
+dev.off()
+```
+
+
+
+
+```{r}
+# CpGs in promoter regions
+# enrichGO
+enrichGO_results<- enrichGO(gene = head(LIMMAout_annot_prom$Gene), 
+         OrgDb = org.Hs.eg.db, 
+         keyType = "SYMBOL", 
+         ont = "BP", 
+         pAdjustMethod = "BH", 
+         pvalueCutoff = 0.05, 
+         qvalueCutoff = 0.05)
+
+enrichGO_results_df <- as.data.frame(enrichGO_results) 
+print(enrichGO_results_df)
+```
+```{r}
+# Dotplot visualisation
+dotplot(enrichGO_results)
+png("dotplot_GO_results_prom.png")
+dotplot(enrichGO_results)
+dev.off()
+```
+
+The most most statistically significant methylated genes belong to categories as actin regulation, protein polymerization and cytoskeleton organization.
+
+The CpGs in promotor regions seem to belong in categories related to aerobic electron transport chains and ATP synthesis.
+
+
